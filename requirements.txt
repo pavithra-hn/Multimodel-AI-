@@ -1,0 +1,11 @@
+streamlit
+langchain-openai
+langchain
+chromadb
+pypdf
+pillow
+python-dotenv
+pdf2image
+pymupdf
+langchain-chroma
+langchain-text-splitters
