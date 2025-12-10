@@ -1,6 +1,7 @@
 import chromadb
 import os
 import time
+import json
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -80,12 +81,49 @@ class MultiModalRAG:
         retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
         
         prompt = ChatPromptTemplate.from_template(
-            """You are a helpful assistant. Use the following pieces of context to answer the question at the end. 
-            The context may contain descriptions of images, tables, or charts. 
-            IMPORTANT: The user CAN see the images from the context. The images are displayed directly to the user along with your response.
-            Therefore, you should refer to the images in your answer (e.g., "As shown in the image on page 3...", "The chart displays...").
-            Do NOT say "I cannot provide images" or "I cannot see the image". Instead, describe the content based on the provided description and explicitly state that the image is shown below/above.
-            Always cite the page number.
+            """You are a Multimodal Document Analysis Model.
+            You must correctly identify whether the user’s answer should come from:
+            - Extracted text
+            - Extracted table
+            - Extracted chart
+            - Extracted image-to-text (OCR from images)
+            - Multiple sources
+
+            🔥 Mandatory Rules
+            1. Never return “No chart/table found” if the answer actually exists in an image, image-text, or OCR.
+            2. If the answer comes from a PDF image with text, treat it as valid content and return the answer from that image.
+            3. When selecting results:
+               - Return only the relevant chart or table, not all charts.
+               - If multiple visuals exist, choose the one most semantically matched to the question.
+            4. When extracting answers from visuals:
+               - Use captions, titles, labels, or page metadata.
+            5. When no chart/table is required, do not force a chart/table response.
+            6. When the answer comes from images containing text, classify the chunk as: content_type = "image_text"
+            7. Always return the best answer even if no visual match is required.
+            
+            📊 Visual Routing Logic
+            - If question refers to: “chart”, “graph”, “trend”, “line”, “bar” → use chart chunks only
+            - If question refers to: “table”, “values”, “numeric”, “compare numbers” → use table chunks only
+            - If question refers to: “image”, “in the picture”, “photo”, “OCR”, “text in image” → use image_text chunks
+            - If no visual keyword is present → use text chunks
+
+            🧠 Core Output Behavior
+            Your final answer MUST:
+            1. Return the correct answer text first.
+            2. Include:
+               - visual_type: chart/table/image_text/text
+               - page number
+               - source name
+            3. If content is from image OCR, clearly indicate: "source_type": "image_text"
+
+            ❌ Forbidden Behaviors
+            - Do NOT return multiple charts unless explicitly asked.
+            - Do NOT fallback to “no chart/table found” unless absolutely no visual or OCR content exists.
+            - Do NOT hallucinate values.
+            - Do NOT output empty visual sections if the answer is textual.
+            
+            IMPORTANT: The user CAN see the images from the context if they are displayed.
+            Do NOT say "I cannot provide images". Instead, describe the content.
 
             Context:
             {context}
@@ -106,3 +144,50 @@ class MultiModalRAG:
         )
         
         return rag_chain
+
+    def select_best_visual_match(self, query : str, candidates : list):
+        """
+        Selects the single most relevant visual element (table/chart) for the query.
+        Returns a dict with 'selected_index' and 'reason'.
+        """
+        if not candidates:
+            return None
+            
+        candidate_desc = "\n".join([f"Index {i}: [Type: {c.get('type')}] {c.get('description')}" for i, c in enumerate(candidates)])
+        
+        prompt = f"""You are an intelligent visual assistant. The user asked: "{query}"
+        
+        Here are the available visual elements candidates extracted from the relevant document chunks:
+        {candidate_desc}
+        
+        Mission:
+        1. Analyze User Intent:
+           - **Specific**: Asking for a specific metric (e.g., "GDP", "inflation", "Table 1", "Figure 3").
+           - **All**: Asking to see "all" charts, "all" tables, "summarize visuals", "show varied data".
+        2. Selection Logic:
+           - If **Specific**: Select the single best match (or top 2 if ambiguous).
+           - If **All**: Select ALL candidates that match the requested type (e.g., if "show all charts", pick ALL charts).
+           - If no direct match, return empty selection.
+        3. Type Matching:
+           - Ensure selected items match the requested type (table/chart) if specified.
+        
+        Return JSON:
+        {{
+            "intent": "specific" | "all", 
+            "visual_type_requested": "chart" | "table" | "any",
+            "selected_indices": [ <list of integers> ],
+            "reason": "<Explanation>"
+        }}
+        """
+        
+        print(f"DEBUG: Selection Prompt:\n{prompt}")
+        
+        try:
+            llm = ChatOpenAI(model="gpt-4o", api_key=os.getenv("OPENAI_API_KEY"), temperature=0)
+            result = llm.invoke(prompt)
+            content = result.content.replace("```json", "").replace("```", "").strip()
+            print(f"DEBUG: Selection Result: {content}")
+            return json.loads(content)
+        except Exception as e:
+            print(f"Error in visual selection: {e}")
+            return None

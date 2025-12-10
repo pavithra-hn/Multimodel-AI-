@@ -136,10 +136,12 @@ with st.sidebar:
     
     if process_btn:
         if uploaded_file and os.getenv("OPENAI_API_KEY"):
-            with st.spinner("🔍 Analyzing document structure..."):
+            with st.spinner("🔍 Analyzing document structure (Text + Vision)..."):
                 # Save uploaded file temporarily
                 with open("temp.pdf", "wb") as f:
                     f.write(uploaded_file.getbuffer())
+                
+                st.info("ℹ️ Note: Deep Vision analysis is enabled. Processing takes ~10-15s per page.")
                 
                 # Process
                 processor = DocumentProcessor()
@@ -150,6 +152,9 @@ with st.sidebar:
                     
                 rag = MultiModalRAG()
                 rag.ingest_documents(documents)
+                
+                # Clear cache so the new RAG instance picks up the new database
+                st.cache_resource.clear()
                 
                 st.sidebar.success(f"✅ Indexed {len(documents)} pages!")
         elif not os.getenv("OPENAI_API_KEY"):
@@ -166,6 +171,10 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+@st.cache_resource
+def get_rag_system():
+    return MultiModalRAG()
+
 # Chat Input
 if prompt := st.chat_input("Ask about your document..."):
     if not os.getenv("OPENAI_API_KEY"):
@@ -178,13 +187,15 @@ if prompt := st.chat_input("Ask about your document..."):
         with st.chat_message("assistant"):
             with st.spinner("🤖 Synapse is thinking..."):
                 try:
-                    rag = MultiModalRAG()
+                    # Use cached RAG system
+                    rag = get_rag_system()
                     qa_chain = rag.get_qa_chain()
                     
                     # Get the answer from the chain (it returns a string directly)
                     answer = qa_chain.invoke(prompt)
                     
                     # Get source documents separately from the retriever
+                    # Using the vector store from the cached rag instance
                     retriever = rag.vector_store.as_retriever(search_kwargs={"k": 5})
                     source_docs = retriever.invoke(prompt)
                     
@@ -193,39 +204,139 @@ if prompt := st.chat_input("Ask about your document..."):
                     # Store answer first to ensure UI consistency
                     st.session_state.messages.append({"role": "assistant", "content": answer})
                     
-                    # Collect unique images to display
-                    unique_images = set()
-                    images_to_display = []
+                    # Collect all candidates (and check for strict ID links in text)
+                    candidates = []
+                    all_images_data = [] 
                     
-                    # Logic to decide if we should show images based on user query
-                    # Only show images if the user asks for them (e.g., "chart", "image", "graph")
-                    image_keywords = ['image', 'chart', 'graph', 'figure', 'visual', 'picture', 'plot', 'diagram', 'photo', 'drawing', 'illustration']
-                    show_images = any(keyword in prompt.lower() for keyword in image_keywords)
+                    import re
+                    # Regex to find IDs in text: e.g. [Detected Table ID: 52a1b3c4]
+                    id_pattern = re.compile(r"ID:\s*([a-zA-Z0-9-]+)\]")
+                    
+                    # 1. Collect all IDs explicitly mentioned in the retrieved text chunks
+                    found_ids_in_context = set()
+                    for doc in source_docs:
+                        matches = id_pattern.findall(doc.page_content)
+                        found_ids_in_context.update(matches)
+                    
+                    unique_id_counter = 0
+                    for doc in source_docs:
+                        if "image_metadata" in doc.metadata:
+                            try:
+                                img_meta_list = json.loads(doc.metadata["image_metadata"])
+                                for item in img_meta_list:
+                                    path = item.get("path")
+                                    if path and os.path.exists(path):
+                                        # Check if this visual's ID was cited in the text
+                                        # Note: Old docs might not have "id" field, handle gracefully
+                                        visual_id = item.get("id", "")
+                                        is_directly_linked = visual_id in found_ids_in_context
+                                        
+                                        desc_prefix = "[DIRECTLY LINKED] " if is_directly_linked else ""
+                                        
+                                        candidates.append({
+                                            "id": unique_id_counter,
+                                            "type": item.get("type", "figure"),
+                                            "description": f"{desc_prefix}{item.get('description', '')[:300]}",
+                                            "is_linked": is_directly_linked
+                                        })
+                                        
+                                        all_images_data.append({
+                                            "path": path,
+                                            "page": doc.metadata.get('page', 'N/A'),
+                                            "markdown": item.get("markdown", ""),
+                                            "is_linked": is_directly_linked
+                                        })
+                                        unique_id_counter += 1
+                            except json.JSONDecodeError:
+                                pass
+                    
+                    # Select the visual matches
+                    winner_idx_list = [] # Keep track of what we showed prominently
+                    
+                    if candidates:
+                        # st.write(f"DEBUG: Found {len(candidates)} candidates.") # Uncomment for UI debug
+                        
+                        with st.spinner("🔍 Analyzing visual intent..."):
+                            selection = rag.select_best_visual_match(prompt, candidates)
+                        
+                        if selection:
+                            selected_indices = selection.get("selected_indices", [])
+                            # Fallback for backward compatibility if model returns old format
+                            if not selected_indices and selection.get("selected_index") is not None:
+                                selected_indices = [selection["selected_index"]]
+                                
+                            intent = selection.get("intent", "specific")
+                            reason = selection.get("reason", "")
+                        else:
+                            selected_indices = []
+                            intent = "specific"
+                            reason = "Selection failed."
+                        
+                        if selected_indices:
+                            winner_idx_list = selected_indices
+                            
+                            # Determine Mode: Gallery (All) vs Focus (Specific)
+                            if intent == "all":
+                                st.markdown(f"### 🖼️ Visual Gallery: {selection.get('visual_type_requested', 'All').capitalize()}s")
+                                if reason:
+                                    st.success(f"**Showing Matches:** {reason}")
+                                
+                                cols = st.columns(2) # Grid layout
+                                for i, idx in enumerate(selected_indices):
+                                    if 0 <= idx < len(all_images_data):
+                                        item = all_images_data[idx]
+                                        with cols[i % 2]:
+                                            st.image(item["path"], caption=f"Page {item['page']}", use_container_width=True)
+                                            if item.get("markdown"):
+                                                with st.expander("📄 Table Data"):
+                                                    st.markdown(item["markdown"])
+                                                    
+                            else:
+                                # Specific Mode - Take the first one (or iterate if multiple specific matches found)
+                                for idx in selected_indices:
+                                    if 0 <= idx < len(all_images_data):
+                                        winner = all_images_data[idx]
+                                        
+                                        st.markdown(f"### 🎯 Most Relevant Visual")
+                                        if reason:
+                                            st.info(f"**Selected:** {reason}")
+                                        st.image(winner["path"], caption=f"Selected Visual from Page {winner['page']}", use_container_width=True)
+                                        
+                                        if winner.get("markdown"):
+                                            st.markdown("#### 📄 Extracted Table Data")
+                                            st.markdown(winner["markdown"])
+                                        
+                                        # Limit to 1 in specific mode to avoid clutter unless strictly needed
+                                        break 
+                        else:
+                            st.warning("ℹ️ No specific chart or table matched your query in the retrieved context.")
+                    else:
+                        st.info("No visual elements found in the context.")
 
-                    if show_images:
-                        for doc in source_docs:
-                            if "image_paths" in doc.metadata:
-                                try:
-                                    image_paths = json.loads(doc.metadata["image_paths"])
-                                    for img_path in image_paths:
-                                        if os.path.exists(img_path) and img_path not in unique_images:
-                                            unique_images.add(img_path)
-                                            images_to_display.append((img_path, doc.metadata.get('page', 'N/A')))
-                                except json.JSONDecodeError:
-                                    pass
+                    # Show OTHER visuals in a gallery if they exist (so users aren't blind)
+                    # Only show this fallback if we were in "Specific" mode or if we missed showing some items
+                    if len(all_images_data) > 0 and intent != "all":
+                        with st.expander("🖼️ All Detected Visuals in Context", expanded=False):
+                            cols = st.columns(3)
+                            shown_count = 0
+                            for i, img_data in enumerate(all_images_data):
+                                if i in winner_idx_list:
+                                    continue # Skip what we just showed
+                                
+                                with cols[shown_count % 3]:
+                                    st.image(img_data["path"], caption=f"Page {img_data['page']}", use_container_width=True)
+                                    if img_data.get("markdown"):
+                                        with st.popover("View Table"):
+                                            st.markdown(img_data["markdown"])
+                                shown_count += 1
                     
-                    # Display images directly in the chat if relevant
-                    if images_to_display:
-                        st.markdown("### Relevant Images:")
-                        cols = st.columns(min(len(images_to_display), 3))
-                        for idx, (img_path, page_num) in enumerate(images_to_display):
-                            with cols[idx % 3]:
-                                st.image(img_path, caption=f"Page {page_num}", use_container_width=True)
-                    
-                    with st.expander("📚 View Source Context"):
+                    with st.expander("📚 View Source Context (Text Only)"):
                         for i, doc in enumerate(source_docs):
                             st.markdown(f"**Source {i+1} (Page {doc.metadata.get('page', 'N/A')}):**")
                             st.caption(doc.page_content[:500] + "...") 
+                            
+                            if "image_metadata" in doc.metadata:
+                                st.caption("*(Contains visual elements - see 'All Detected Visuals' above)*") 
                             
                 except Exception as e:
                     st.error(f"❌ An error occurred: {str(e)}")

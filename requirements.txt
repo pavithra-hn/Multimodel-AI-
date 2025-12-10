@@ -9,3 +9,5 @@ pdf2image
 pymupdf
 langchain-chroma
 langchain-text-splitters
+tiktoken
+openai
