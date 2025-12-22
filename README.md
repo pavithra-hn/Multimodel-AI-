@@ -1,10 +1,16 @@
 # Synapse: Intelligent Multi-Modal RAG System 🧠
 
-Synapse – Multi-Modal RAG System for Intelligent Document Question Answering
+Project Title
 
-Synapse is a multi-modal Retrieval-Augmented Generation (RAG) system designed to intelligently process and query complex PDF documents. The system extracts structured and unstructured content such as text, tables, charts, and figures, converts them into searchable formats, and enables accurate question answering through context-aware retrieval.
+Synapse – Intelligent Multi-Modal RAG System
 
-The pipeline supports both specific queries (e.g., “show the revenue table”) and broad analytical questions (e.g., “summarize key insights from the report”), returning relevant content along with supporting document context.
+Project Description
+
+Synapse is an advanced multi-modal Retrieval-Augmented Generation (RAG) system designed for intelligent document understanding and question answering. The system processes PDFs by combining textual and visual (vision-based) analysis, enabling accurate handling of complex layouts such as tables, charts, and figures that are often missed by traditional text-only parsers.
+
+Instead of relying solely on text extraction, Synapse performs vision-based layout detection on document pages, identifies and crops visual elements, converts tables into structured Markdown, and stores enriched representations in a vector database (ChromaDB). A context-aware retrieval pipeline selects the most relevant textual and visual content, allowing users to ask both semantic questions (e.g., summaries, explanations) and visual-specific queries (e.g., “show the revenue table”).
+
+The system is deployed through a Streamlit interface, offering an end-to-end workflow from document upload to interactive question answering, making it suitable for financial reports, research papers, and enterprise documents.
 
 ## 🚀 Key Features
 
