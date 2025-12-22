@@ -1,6 +1,10 @@
 # Synapse: Intelligent Multi-Modal RAG System 🧠
 
-Synapse is a text-centric and **Vision-First** Document QA system. Unlike traditional RAG pipelines that treat PDFs as plain text, Synapse uses **GPT-4o's Vision capabilities** to "see" the document, accurately detecting, cropping, and understanding visual elements like **Tables** and **Charts**.
+Synapse – Multi-Modal RAG System for Intelligent Document Question Answering
+
+Synapse is a multi-modal Retrieval-Augmented Generation (RAG) system designed to intelligently process and query complex PDF documents. The system extracts structured and unstructured content such as text, tables, charts, and figures, converts them into searchable formats, and enables accurate question answering through context-aware retrieval.
+
+The pipeline supports both specific queries (e.g., “show the revenue table”) and broad analytical questions (e.g., “summarize key insights from the report”), returning relevant content along with supporting document context.
 
 ## 🚀 Key Features
 
